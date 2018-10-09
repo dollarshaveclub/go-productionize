@@ -1,51 +1,38 @@
 package reporter // import "github.com/dollarshaveclub/go-productionize/reporter"
 
 import (
+	"context"
 	"fmt"
-	"log"
 	"runtime"
 	"sync"
 	"time"
 
 	"github.com/DataDog/datadog-go/statsd"
+	"github.com/dollarshaveclub/go-productionize/svcinfo"
 )
 
 const (
-	defaultPeriod = 5 * time.Second
+	// DefaultPeriod is the amount of time between when we send out updated metrics
+	DefaultPeriod = 5 * time.Second
 )
 
 var (
-	// The following should be set at compile time if they are wanted.
-	// -ldflags "-X github.com/dollarshaveclub/go-productionize/reporter.CommitSHA=$(COMMIT)"
-
-	// CommitSHA is the latest commit for the built the binary
-	CommitSHA string
-	// BuildDate is the date for the binary build
-	BuildDate string
-	// Version is a tagged version for the binary
-	Version string
-
 	defaultTags = []string{}
 )
 
 // Reporter provides basic statistics about the runtime
 type Reporter struct {
-	dd     *statsd.Client
-	period time.Duration
-	stats  *stats
+	ctx        context.Context
+	cancelFunc func()
+	dd         *statsd.Client
+	period     time.Duration
+	stats      Stats
 
 	defaultTags []string
 	infoTags    []string
 	runtimeTags []string
 
 	sync.RWMutex
-}
-
-// ServiceInfo provides information about the service
-type ServiceInfo struct {
-	BuildDate string
-	Commit    string
-	Version   string
 }
 
 // GoInfo provides information about the Go Toolchain used to build the binary
@@ -63,33 +50,25 @@ type RuntimeStats struct {
 	NumGoroutine int
 }
 
-// stats struct keeps track of all information
-type stats struct {
-	GoInfo      *GoInfo
-	Mem         *runtime.MemStats
-	Runtime     *RuntimeStats
-	ServiceInfo *ServiceInfo
-}
-
-// ExportedStats provides a copy of the current version of Stats
-//
-// This is used as a copy of the Stats struct above to keep it from being changed
-// by the Watcher
-type ExportedStats struct {
+// Stats struct keeps track of all information
+type Stats struct {
 	GoInfo      GoInfo
 	Mem         runtime.MemStats
 	Runtime     RuntimeStats
-	ServiceInfo ServiceInfo
+	ServiceInfo svcinfo.ServiceInfo
 }
 
 // New will create a new runtime watch background process and begin producing metrics for the runtime
 //
 // A new Reporter is returned to allow the service to manually pull a set of stats if required.
 func New(dd *statsd.Client, options ...func(*Reporter)) *Reporter {
+	ctx, cancel := context.WithCancel(context.Background())
 	r := &Reporter{
+		ctx:         ctx,
+		cancelFunc:  cancel,
 		dd:          dd,
-		period:      defaultPeriod,
-		stats:       &stats{},
+		period:      DefaultPeriod,
+		stats:       Stats{},
 		defaultTags: defaultTags,
 	}
 
@@ -98,20 +77,16 @@ func New(dd *statsd.Client, options ...func(*Reporter)) *Reporter {
 	}
 
 	// These are static so we only need to store these once
-	r.stats.ServiceInfo = &ServiceInfo{
-		Commit:    CommitSHA,
-		BuildDate: BuildDate,
-		Version:   Version,
-	}
+	r.stats.ServiceInfo = svcinfo.GetInfo()
 
-	r.stats.GoInfo = &GoInfo{
+	r.stats.GoInfo = GoInfo{
 		Version: runtime.Version(),
 		Arch:    runtime.GOARCH,
 		OS:      runtime.GOOS,
 	}
 
-	r.stats.Mem = &runtime.MemStats{}
-	r.stats.Runtime = &RuntimeStats{}
+	r.stats.Mem = runtime.MemStats{}
+	r.stats.Runtime = RuntimeStats{}
 	r.buildTags()
 
 	r.dd.Count("startup", 1, []string{}, 1.0)
@@ -142,45 +117,38 @@ func (r *Reporter) watch() {
 		var start time.Time
 		var processTime time.Duration
 		lastGCNum := uint32(0)
+		timer := time.NewTimer(0)
 		for {
-			log.Println("hey")
-			start = time.Now()
+			select {
+			case <-timer.C:
+				start = time.Now()
 
-			// Store this so that we can record all of the GCs that occurred since last lookup
-			if r.stats.Mem != nil {
+				// Store this so that we can record all of the GCs that occurred since last lookup
 				lastGCNum = r.stats.Mem.NumGC
-			}
-			r.fillStats()
 
-			r.exportMemStats(lastGCNum)
-			r.exportRuntimeStats()
-			r.exportRuntimeInfo()
-			r.exportServiceInfo()
+				r.fillStats()
 
-			processTime = time.Since(start)
+				r.exportMemStats(lastGCNum)
+				r.exportRuntimeStats()
+				r.exportRuntimeInfo()
+				r.exportServiceInfo()
 
-			// Try to produce stats every 5 seconds so remove the processing time from the sleep
-			if r.period-processTime > 0 {
-				time.Sleep(r.period - processTime)
+				processTime = time.Since(start)
+
+				// Try to produce stats every 5 seconds so remove the processing time from the sleep
+				if r.period-processTime > 0 {
+					timer = time.NewTimer(r.period - processTime)
+				}
+			case <-r.ctx.Done():
+				return
 			}
 		}
 	}()
 }
 
 func (r *Reporter) buildTags() {
-	// Build tags for information compiled into the binary
-	infoTags := r.defaultTags
-	if r.stats.ServiceInfo.Commit != "" {
-		infoTags = append(infoTags, fmt.Sprintf("commit:%s", r.stats.ServiceInfo.Commit))
-	}
-	if r.stats.ServiceInfo.BuildDate != "" {
-		infoTags = append(infoTags, fmt.Sprintf("build_date:%s", r.stats.ServiceInfo.BuildDate))
-	}
-	if r.stats.ServiceInfo.Version != "" {
-		infoTags = append(infoTags, fmt.Sprintf("version:%s", r.stats.ServiceInfo.Version))
-	}
-
-	r.infoTags = infoTags
+	// Skip over the default tags so that we don't double tag if these were added before
+	r.infoTags = svcinfo.GetDDTags()
 
 	// Tags are used here to allow for these values to be graphed as needed
 	r.runtimeTags = r.defaultTags
@@ -191,9 +159,9 @@ func (r *Reporter) fillStats() {
 	// Don't want to read while we're updating pointers
 	r.Lock()
 
-	runtime.ReadMemStats(r.stats.Mem)
+	runtime.ReadMemStats(&r.stats.Mem)
 
-	r.stats.Runtime = &RuntimeStats{
+	r.stats.Runtime = RuntimeStats{
 		NumCPU:       runtime.NumCPU(),
 		NumCgoCall:   runtime.NumCgoCall(),
 		NumGoroutine: runtime.NumGoroutine(),
@@ -216,7 +184,6 @@ func (r *Reporter) exportRuntimeInfo() {
 
 func (r *Reporter) exportServiceInfo() {
 	// Send some basic service information constantly to track for the duration of the services' operation
-	fmt.Println(r.infoTags)
 	if len(r.infoTags) > 0 {
 		r.dd.Gauge("info", 1.0, r.infoTags, 1.0)
 	}
@@ -275,14 +242,14 @@ func (r *Reporter) exportMemStats(lastGCNum uint32) {
 }
 
 // GetStats will return a set of stats to the requester
-func (r *Reporter) GetStats() ExportedStats {
+func (r *Reporter) GetStats() Stats {
 	r.RLock()
 	defer r.RUnlock()
 
-	return ExportedStats{
-		GoInfo:      *r.stats.GoInfo,
-		Runtime:     *r.stats.Runtime,
-		Mem:         *r.stats.Mem,
-		ServiceInfo: *r.stats.ServiceInfo,
-	}
+	return r.stats
+}
+
+// Cancel will stop the watcher
+func (r *Reporter) Cancel() {
+	r.cancelFunc()
 }
