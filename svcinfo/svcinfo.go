@@ -1,4 +1,4 @@
-package svcinfo // import "github.com/dollarshaveclub/go-productionize/svcinfo.go"
+package svcinfo // import "github.com/dollarshaveclub/go-productionize/svcinfo"
 
 import "fmt"
 
