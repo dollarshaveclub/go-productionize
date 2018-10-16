@@ -1,6 +1,15 @@
 package svcinfo // import "github.com/dollarshaveclub/go-productionize/svcinfo"
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
+
+const (
+	commitSHAEnv = "COMMIT_SHA"
+	buildDateEnv = "BUILD_DATE"
+	versionEnv   = "VERSION"
+)
 
 var (
 	// The following should be set at compile time if they are wanted.
@@ -19,6 +28,19 @@ type ServiceInfo struct {
 	BuildDate string
 	CommitSHA string
 	Version   string
+}
+
+func init() {
+	// Default to the compiled in version but allow for environment variables too
+	if CommitSHA == "" && os.Getenv(commitSHAEnv) != "" {
+		CommitSHA = os.Getenv(commitSHAEnv)
+	}
+	if BuildDate == "" && os.Getenv(buildDateEnv) != "" {
+		BuildDate = os.Getenv(buildDateEnv)
+	}
+	if Version == "" && os.Getenv(versionEnv) != "" {
+		Version = os.Getenv(versionEnv)
+	}
 }
 
 // GetDDTags will return the info from this library into a string slice that is formatted
