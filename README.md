@@ -1,4 +1,4 @@
-# Go Productoinize
+# Go Productionize
 
 Go Productionize is a set of libraries that can make building a production ready environment easier. It provides a set of libraries that can be used separately, but are more powerful when combined together.
 
@@ -78,7 +78,7 @@ Metrics include:
 
 ### Usage
 
-To use the reporter library, you will need to import the library and the run the "New" function inside of the main of your service:
+To use the reporter library, you will need to import the library and then run the "New" function inside of the main of your service:
 
 ```go
 func main() {
