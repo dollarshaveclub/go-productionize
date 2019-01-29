@@ -104,7 +104,10 @@ func New(mux *http.ServeMux, opts ...func(*Healthz)) (*Healthz, error) {
 	mux.HandleFunc(path.Join(rootPrefix, "abortabortabort"), h.abortAbortAbortHandler())
 
 	// Add pprof outside of the default HTTP ServeMux
-	mux.HandleFunc(path.Join(rootPrefix, "pprof/"), fakePProfIndexHandler())
+	//
+	// path.Join doesn't work here and causes bad path to be created on the resulting
+	// index page from the net/http/pprof package
+	mux.HandleFunc(rootPrefix+"/pprof/", fakePProfIndexHandler())
 	mux.HandleFunc(path.Join(rootPrefix, "pprof/cmdline"), pprof.Cmdline)
 	mux.HandleFunc(path.Join(rootPrefix, "pprof/profile"), pprof.Profile)
 	mux.HandleFunc(path.Join(rootPrefix, "pprof/symbol"), pprof.Symbol)
